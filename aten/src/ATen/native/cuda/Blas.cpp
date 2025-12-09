@@ -5,6 +5,7 @@
 #include <c10/core/Scalar.h>
 #include <c10/core/ScalarType.h>
 #define TORCH_ASSERT_ONLY_METHOD_OPERATORS
+#include <ATen/Context.h>
 #include <ATen/core/Tensor.h>
 #include <ATen/core/NamedTensor.h>
 #include <ATen/Dispatch.h>
@@ -1793,11 +1794,12 @@ std::optional<c10::ScalarType> out_dtype) {
 #else
   // _scaled_mm_allowed_device is used here within _grouped_mm_cuda which seems incorrect since scale is not used.
   // the _grouped_mm_fallback should be safe for any ROCm GPU since it's just calling typical mm/bmm
-  bool use_fast_path = false;
-  // On non CK system(w/ ROCm), make sure use_fast_path is false
+  // On ROCm fast path routes to _grouped_mm_fallback and slow path to group_gemm_ck.
+  // ROCM_ALLOW_GROUP_GEMM_CK env variable enables group_gemm_ck path.
+  bool use_fast_path = true;
 #if defined(USE_ROCM_CK_GEMM)
-  if (at::detail::getCUDAHooks().isGPUArch({"gfx942", "gfx950"})) {
-    use_fast_path = true;
+  if (at::globalContext().rocmAllowGroupGemmCk() && at::detail::getCUDAHooks().isGPUArch({"gfx942", "gfx950"})) {
+    use_fast_path = false;
   }
 #endif //USE_ROCM_CK_GEMM
 #endif
@@ -1808,14 +1810,16 @@ std::optional<c10::ScalarType> out_dtype) {
 #ifndef USE_ROCM
     at::cuda::detail::bf16bf16_grouped_mm(mat_a, mat_b, offs, bias, out);
 #else
-#if defined(USE_ROCM_CK_GEMM)
-    at::hip::detail::group_gemm_ck(mat_a, mat_b, offs, bias, out);
-#else
-    TORCH_WARN("ROCm: Group Gemm through CK not selected.");
-#endif //USE_ROCM_CK_GEMM
+    _grouped_mm_fallback(mat_a, mat_b, offs, bias, out_dtype, out);
 #endif
   } else {
+#ifndef USE_ROCM
     _grouped_mm_fallback(mat_a, mat_b, offs, bias, out_dtype, out);
+#else
+#if defined(USE_ROCM_CK_GEMM)
+    at::hip::detail::group_gemm_ck(mat_a, mat_b, offs, bias, out);
+#endif
+#endif
   }
   return out;
 }
