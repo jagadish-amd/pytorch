@@ -13,7 +13,7 @@
 #include <ck/tensor_operation/gpu/device/tensor_layout.hpp>
 #include <ck/tensor_operation/gpu/device/gemm_specialization.hpp>
 #include <ck/tensor_operation/gpu/device/impl/device_grouped_gemm_multiple_d_splitk_xdl_cshuffle_two_stage.hpp>
-#include "ck/tensor_operation/gpu/device/impl/device_grouped_gemm_xdl_splitk_cshuffle.hpp"
+#include <ck/tensor_operation/gpu/device/impl/device_grouped_gemm_xdl_splitk_cshuffle.hpp>
 #include <ck/tensor_operation/gpu/element/element_wise_operation.hpp>
 #include <ck/utility/tuple.hpp>
 
