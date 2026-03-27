@@ -675,9 +675,7 @@ class TestFP8Matmul(TestCase):
         if not _device_supports_scaled_mm_fp8(device):
             raise unittest.SkipTest(f8_msg)
         _, x_dtype, y_dtype, out_dtype, size = test_case
-        expect_e5m2_cuda_error = (
-            x_dtype == e5m2_type and y_dtype == e5m2_type and out_dtype is None
-        )
+        expect_e5m2_cuda_error = x_dtype == e5m2_type and y_dtype == e5m2_type
         # According to https://docs.nvidia.com/cuda/cublas/#id99 8F_E5M2 MM is unsupported
         # supported on ROCm but fails on CUDA
         ctx = (
