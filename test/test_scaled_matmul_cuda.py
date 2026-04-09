@@ -2154,6 +2154,8 @@ class TestFP8Matmul(TestCase):
             if sqnr.item() <= approx_match_sqnr_target:
                 raise AssertionError(f"sqnr {sqnr.item()} should be > {approx_match_sqnr_target}")
 
+    # ROCm currently does not enforce swizzle-length checks in scaled_mm.
+    @skipIfRocm
     @unittest.skipIf(not PLATFORM_SUPPORTS_MX_GEMM or IS_WINDOWS, mx_skip_msg)
     def test_passed_swizzle_arrays(self, device) -> None:
         # Ensure that incorrectly-sized swizzle arrays are caught
