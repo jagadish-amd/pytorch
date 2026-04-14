@@ -1263,8 +1263,22 @@ void check_swizzle_lengths(ScaledGemmImplementation impl,
             swizzle_b[0] == SwizzleType::NO_SWIZZLE,
         "For ROCM MX gemm, swizzle_a and swizzle_b must both be NO_SWIZZLE");
 #else
-    TORCH_CHECK_VALUE(swizzle_a.size() == num_args, "swizzle_a must have ", num_args, " values, got ", swizzle_a.size());
-    TORCH_CHECK_VALUE(swizzle_b.size() == num_args, "swizzle_b must have ", num_args, " values, got ", swizzle_b.size());
+    TORCH_CHECK_VALUE(
+        swizzle_a.size() == num_args,
+        "swizzle_a must have ",
+        num_args,
+        " value",
+        num_args == 1 ? "" : "s",
+        ", got ",
+        swizzle_a.size());
+    TORCH_CHECK_VALUE(
+        swizzle_b.size() == num_args,
+        "swizzle_b must have ",
+        num_args,
+        " value",
+        num_args == 1 ? "" : "s",
+        ", got ",
+        swizzle_b.size());
 #endif
 
     // No need to check anything else

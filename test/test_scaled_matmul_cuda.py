@@ -2171,7 +2171,7 @@ class TestFP8Matmul(TestCase):
             ValueError,
             "swizzle_a and swizzle_b must each have 1 value"
             if torch.version.hip
-            else "swizzle_a must have 1 values, got 0",
+            else "swizzle_a must have 1 value, got 0",
         ):
             _ = torch.nn.functional.scaled_mm(
                 x,
@@ -2187,7 +2187,7 @@ class TestFP8Matmul(TestCase):
             ValueError,
             "swizzle_a and swizzle_b must each have 1 value"
             if torch.version.hip
-            else "swizzle_b must have 1 values, got 0",
+            else "swizzle_b must have 1 value, got 0",
         ):
             _ = torch.nn.functional.scaled_mm(
                 x,
