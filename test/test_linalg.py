@@ -40,7 +40,7 @@ from torch.testing._internal.common_dtype import (
     floating_and_complex_types_and, floating_types_and, complex_types,
 )
 from torch.testing._internal.common_cuda import CDNA2OrLater, SM80OrLater, SM90OrLater, tf32_on_and_off, _get_magma_version, \
-    _get_torch_cuda_version, TEST_MULTIGPU
+    _get_torch_cuda_version, TEST_MULTIGPU, blas_library_context
 from torch.testing._internal.common_quantization import _group_quantize_tensor, _dynamically_quantize_per_channel, \
     _group_quantize_tensor_symmetric
 from torch.testing._internal.common_mkldnn import reduced_f32_on_and_off
@@ -8540,17 +8540,22 @@ scipy_lobpcg  | {eq_err_scipy:10.2e}  | {eq_err_general_scipy:10.2e}  | {iters2:
         def genf_Half(x, y):
             return torch.randn(x, y, dtype=dtype, device=device)
 
-        for (n, m, p) in [(20, 10, 15), (15, 20, 10), (25, 18, 10)]:
-            if (dtype == torch.int32) or (dtype == torch.int64):
-                genf = genf_int
-            elif (dtype == torch.bfloat16):
-                genf = genf_bfloat
-            elif (dtype == torch.half):
-                genf = genf_Half
-            else:
-                genf = genf_float
-
-            _test_mm(n, m, p, dtype, genf)
+        backends = [None]
+        if self.device_type == 'cuda' and torch.version.hip:
+            backends.append("ck")
+        for backend in backends:
+            ctx = contextlib.nullcontext() if backend is None else blas_library_context(backend)
+            with ctx:
+                for (n, m, p) in [(20, 10, 15), (15, 20, 10), (25, 18, 10)]:
+                    if (dtype == torch.int32) or (dtype == torch.int64):
+                        genf = genf_int
+                    elif (dtype == torch.bfloat16):
+                        genf = genf_bfloat
+                    elif (dtype == torch.half):
+                        genf = genf_Half
+                    else:
+                        genf = genf_float
+                    _test_mm(n, m, p, dtype, genf)
 
     @onlyNativeDeviceTypes
     def test_mm_bmm_non_memory_dense(self, device):
@@ -8664,22 +8669,30 @@ scipy_lobpcg  | {eq_err_scipy:10.2e}  | {eq_err_general_scipy:10.2e}  | {iters2:
                 b2 = torch.randn(shape2, dtype=dtype, device=device)
                 yield b1, b2
 
-        for num_batches in batch_sizes:
-            for (b1, b2), perm3 in itertools.product(generate_inputs(num_batches), itertools.permutations((0, 1, 2))):
-                res1 = torch.bmm(b1, b2)
-                res2 = torch.full((num_batches, M, O), math.nan, dtype=dtype, device=device) \
-                    .permute(perm3).contiguous().permute(invert_perm(perm3))
-                torch.bmm(b1, b2, out=res2)
-                expect = torch.from_numpy(
-                    b1.to(numpy_dtype).cpu().numpy() @ b2.to(numpy_dtype).cpu().numpy()).to(device=device, dtype=dtype)
-                self.assertEqual(expect, res1)
-                self.assertEqual(expect, res2)
+        backends = [None]
+        if self.device_type == 'cuda' and torch.version.hip:
+            backends.append("ck")
+        for backend in backends:
+            ctx = contextlib.nullcontext() if backend is None else blas_library_context(backend)
+            with ctx:
+                for num_batches in batch_sizes:
+                    for (b1, b2), perm3 in itertools.product(
+                            generate_inputs(num_batches), itertools.permutations((0, 1, 2))):
+                        res1 = torch.bmm(b1, b2)
+                        res2 = torch.full((num_batches, M, O), math.nan, dtype=dtype, device=device) \
+                            .permute(perm3).contiguous().permute(invert_perm(perm3))
+                        torch.bmm(b1, b2, out=res2)
+                        expect = torch.from_numpy(
+                            b1.to(numpy_dtype).cpu().numpy() @ b2.to(numpy_dtype).cpu().numpy()
+                        ).to(device=device, dtype=dtype)
+                        self.assertEqual(expect, res1)
+                        self.assertEqual(expect, res2)
 
-                if self.device_type == 'cuda':
-                    # check that mixed arguments are rejected
-                    self.assertRaises(RuntimeError, lambda: torch.bmm(b1, b2.cpu()))
-                    self.assertRaises(RuntimeError, lambda: torch.bmm(b1.cpu(), b2))
-                    self.assertRaises(RuntimeError, lambda: torch.bmm(b1, b2, out=res2.cpu()))
+                        if self.device_type == 'cuda':
+                            # check that mixed arguments are rejected
+                            self.assertRaises(RuntimeError, lambda: torch.bmm(b1, b2.cpu()))
+                            self.assertRaises(RuntimeError, lambda: torch.bmm(b1.cpu(), b2))
+                            self.assertRaises(RuntimeError, lambda: torch.bmm(b1, b2, out=res2.cpu()))
 
     def _test_addbmm_baddbmm(self, func, b1, b2, ref, out_tensor):
         getattr(out_tensor, func + "_")(b1, b2)
