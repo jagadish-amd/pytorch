@@ -19,6 +19,24 @@ if 'qnnpack' in supported_qengines and any([IS_PPC, TEST_WITH_TSAN, IS_MACOS, IS
 if IS_ARM64:
     supported_qengines = [qe for qe in supported_qengines if qe not in ('fbgemm', 'x86')]
 
+def _rocm_release_tuple() -> tuple[int, ...] | None:
+    r = getattr(torch.version, "rocm", None)
+    if r is None:
+        return None
+    try:
+        parts = [int(x) for x in str(r).split(".")[:3]]
+    except ValueError:
+        return None
+    while len(parts) < 3:
+        parts.append(0)
+    return (parts[0], parts[1], parts[2])
+
+
+def rocm_mxfp4_ext_scale_layout_available() -> bool:
+    """True when runtime ROCm is at least 7.13.0 (aligns with C++ EXT when ROCM_VERSION >= 71300)."""
+    t = _rocm_release_tuple()
+    return t is not None and t >= (7, 13, 0)
+
 def _conv_output_shape(input_size, kernel_size, padding, stride, dilation,
                        output_padding=0):
     """Computes the output shape given convolution parameters."""
@@ -514,32 +532,48 @@ def from_blocked_format(x_mxfp8, scales_unswizzled, blocksize=32):
 
 def to_blocked(input_matrix) -> torch.Tensor:
     """
-    Rearrange a large matrix by breaking it into blocks and applying the rearrangement pattern.
+    Rearrange MX block scale factors for GEMM consumption (device-specific layout).
 
-    See:
-        https://docs.nvidia.com/cuda/cublas/index.html#d-block-scaling-factors-layout
+    On CUDA, uses the cuBLAS MX block scaling layout (128 by 4 tiles); see
+    https://docs.nvidia.com/cuda/cublas/index.html#d-block-scaling-factors-layout
+
+    On ROCm 7.13.0 or newer (``torch.version.rocm``), uses the hipBLASLt GFX950 pre-swizzled E8M0 layout for
+    ``Block_32_UE8M0_32_8_EXT``: pad to ``ceil(H,32)`` by ``ceil(W,8)``, view as
+    ``(H//32, 2, 16, W//8, 2, 4)``, ``permute(0, 3, 5, 2, 4, 1)`` (mxDataGenerator
+    ``preSwizzleScalesGFX950`` / AITER ``e8m0_shuffle``). On older ROCm, uses the same cuBLAS-style layout as CUDA.
 
     Args:
-        input_matrix: Input tensor of shape (H, W)
+        input_matrix: 2D tensor of shape (H, W)
 
     Returns:
-        Rearranged tensor of shape (32*ceil_div(H,128), 16*ceil_div(W,4))
+        1D tensor of length ``ceil(H, tile_h) * ceil(W, tile_w)`` with device-specific tiling.
     """
     rows, cols = input_matrix.shape
+
+    if torch.version.hip and rocm_mxfp4_ext_scale_layout_available():
+        padded_rows = ceil_div(rows, 32) * 32
+        padded_cols = ceil_div(cols, 8) * 8
+
+        padded = input_matrix
+        if (rows, cols) != (padded_rows, padded_cols):
+            padded = torch.zeros((padded_rows, padded_cols), device=input_matrix.device, dtype=input_matrix.dtype)
+            padded[:rows, :cols] = input_matrix
+
+        x = padded.view(padded_rows // 32, 2, 16, padded_cols // 8, 2, 4)
+        x = x.permute(0, 3, 5, 2, 4, 1).contiguous()
+        return x.flatten()
+
     n_row_blocks = ceil_div(rows, 128)
     n_col_blocks = ceil_div(cols, 4)
 
-    # Calculate the padded shape
     padded_rows = n_row_blocks * 128
     padded_cols = n_col_blocks * 4
 
     padded = input_matrix
-    # Ideally we would use torch.nn.pad but it doesn't support float8_e8m0fnu for now
     if (rows, cols) != (padded_rows, padded_cols):
         padded = torch.zeros((padded_rows, padded_cols), device=input_matrix.device, dtype=input_matrix.dtype)
         padded[:rows, :cols] = input_matrix
 
-    # Rearrange the blocks
     blocks = padded.view(n_row_blocks, 128, n_col_blocks, 4).permute(0, 2, 1, 3)
     rearranged = blocks.reshape(-1, 4, 32, 4).transpose(1, 2).reshape(-1, 32, 16)
 
