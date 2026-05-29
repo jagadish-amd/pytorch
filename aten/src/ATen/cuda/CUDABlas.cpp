@@ -1996,6 +1996,19 @@ int get_scale_mode(ScalingType scaling_type, ScalarType scale_dtype, bool use_fa
       TORCH_CHECK(false, "scaled_gemm with `torch.float8_e8m0fnu` scales of 1x32 blocks is only supported for CUDA 12.8 and above");
 #endif // if CUDA_VERSION >= 12080
 
+    case ScalingType::BlockWiseBlk32Ue8m0_32_8_EXT:
+      TORCH_CHECK(scale_dtype == kFloat8_e8m0fnu);
+#ifdef USE_ROCM
+#if ROCM_VERSION >= 71300
+      // HIPBLASLT_MATMUL_MATRIX_SCALE_BLK32_UE8M0_32_8_EXT; older hipblaslt headers omit the enumerator name.
+      return 1001;
+#else
+      TORCH_CHECK(false, "BlockWiseBlk32Ue8m0_32_8_EXT requires ROCm 7.13.0 or later");
+#endif
+#else
+      TORCH_CHECK(false, "BlockWiseBlk32Ue8m0_32_8_EXT is only supported on ROCm");
+#endif
+
     case ScalingType::BlockWise1x16:
       TORCH_CHECK(scale_dtype == kFloat8_e4m3fn);
 #if CUDA_VERSION >= 12080

@@ -1914,7 +1914,7 @@ class TestFP8Matmul(TestCase):
         (128, 256, 512),
         (256, 512, 128),
         (512, 128, 256),
-
+        (256, 256, 512),
         # Non block multiples
         (65, 96, 112),
         (197, 224, 272),
@@ -2134,8 +2134,8 @@ class TestFP8Matmul(TestCase):
 
         C_ref = A_ref @ B_ref.t()
 
-        # convert to swizzled format
-        if not torch.version.hip:
+        # convert to swizzled format: cuBLAS layout on CUDA; on ROCm only MXFP4 uses hipBLASLt GFX950 scale layout
+        if not torch.version.hip or recipe == "mxfp4":
             A_scale = to_blocked(A_scale)
             B_scale = to_blocked(B_scale)
 

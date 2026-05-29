@@ -236,7 +236,10 @@ bool check_mxfp8_recipe(
 
 /**
  * Both inputs must be fp4
- * A, B must have 1 scale each, {Blockwise_1x32, e8m0}
+ * A, B must have 1 scale each with float8_e8m0fnu scales:
+ * - CUDA: BlockWise1x32 (cuBLAS-style swizzled block scales)
+ * - ROCm 7.13.0+: BlockWiseBlk32Ue8m0_32_8_EXT (hipBLASLt gfx950 EXT layout)
+ * - ROCm below 7.13.0 at build time: BlockWise1x32 (legacy ROCm MXFP4)
  */
 bool check_mxfp4_recipe(
     c10::ScalarType type_a,
@@ -255,11 +258,16 @@ bool check_mxfp4_recipe(
     return false;
   }
 
-  // Need {Blockwise_1x32, e8m0} for A & B
-  if (recipe_a[0] != ScalingType::BlockWise1x32) return false;
   if (scales_a[0].scalar_type() != ScalarType::Float8_e8m0fnu) return false;
-  if (recipe_b[0] != ScalingType::BlockWise1x32) return false;
   if (scales_b[0].scalar_type() != ScalarType::Float8_e8m0fnu) return false;
+
+#if defined(USE_ROCM) && ROCM_VERSION >= 71300
+  if (recipe_a[0] != ScalingType::BlockWiseBlk32Ue8m0_32_8_EXT) return false;
+  if (recipe_b[0] != ScalingType::BlockWiseBlk32Ue8m0_32_8_EXT) return false;
+#else
+  if (recipe_a[0] != ScalingType::BlockWise1x32) return false;
+  if (recipe_b[0] != ScalingType::BlockWise1x32) return false;
+#endif
 
   return true;
 }
