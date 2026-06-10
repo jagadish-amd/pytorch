@@ -540,7 +540,7 @@ def to_blocked(input_matrix) -> torch.Tensor:
     On ROCm 7.13.0 or newer (``torch.version.rocm``), uses the hipBLASLt GFX950 pre-swizzled E8M0 layout for
     ``Block_32_UE8M0_32_8_EXT``: pad to ``ceil(H,32)`` by ``ceil(W,8)``, view as
     ``(H//32, 2, 16, W//8, 2, 4)``, ``permute(0, 3, 5, 2, 4, 1)`` (mxDataGenerator
-    ``preSwizzleScalesGFX950`` / AITER ``e8m0_shuffle``). On older ROCm, uses the same cuBLAS-style layout as CUDA.
+    ``preSwizzleScalesGFX950`` / AITER ``e8m0_shuffle``). On older ROCm, returns the input unchanged (contiguous 1D).
 
     Args:
         input_matrix: 2D tensor of shape (H, W)
@@ -550,18 +550,20 @@ def to_blocked(input_matrix) -> torch.Tensor:
     """
     rows, cols = input_matrix.shape
 
-    if torch.version.hip and rocm_mxfp4_ext_scale_layout_available():
-        padded_rows = ceil_div(rows, 32) * 32
-        padded_cols = ceil_div(cols, 8) * 8
+    if torch.version.hip:
+        if rocm_mxfp4_ext_scale_layout_available():
+            padded_rows = ceil_div(rows, 32) * 32
+            padded_cols = ceil_div(cols, 8) * 8
 
-        padded = input_matrix
-        if (rows, cols) != (padded_rows, padded_cols):
-            padded = torch.zeros((padded_rows, padded_cols), device=input_matrix.device, dtype=input_matrix.dtype)
-            padded[:rows, :cols] = input_matrix
+            padded = input_matrix
+            if (rows, cols) != (padded_rows, padded_cols):
+                padded = torch.zeros((padded_rows, padded_cols), device=input_matrix.device, dtype=input_matrix.dtype)
+                padded[:rows, :cols] = input_matrix
 
-        x = padded.view(padded_rows // 32, 2, 16, padded_cols // 8, 2, 4)
-        x = x.permute(0, 3, 5, 2, 4, 1).contiguous()
-        return x.flatten()
+            x = padded.view(padded_rows // 32, 2, 16, padded_cols // 8, 2, 4)
+            x = x.permute(0, 3, 5, 2, 4, 1).contiguous()
+            return x.flatten()
+        return input_matrix.contiguous().flatten()
 
     n_row_blocks = ceil_div(rows, 128)
     n_col_blocks = ceil_div(cols, 4)
