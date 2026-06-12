@@ -22,6 +22,7 @@ from torch.nn.functional import (
 from torch.testing._internal.common_cuda import (
     IS_SM90,
     _get_torch_cuda_version,
+    _get_torch_rocm_version,
     PLATFORM_SUPPORTS_FP8,
     PLATFORM_SUPPORTS_FP8_GROUPED_GEMM,
     PLATFORM_SUPPORTS_MX_GEMM,
@@ -1945,6 +1946,14 @@ class TestFP8Matmul(TestCase):
         if torch.version.hip:
             if not (M % 16 == 0 and K % 128 == 0 and N % 16 == 0):
                 raise unittest.SkipTest("M and N must be multiples of 16 and K must be multiple of 128 on ROCm, skipping")
+            if (
+                recipe == "mxfp4"
+                and _get_torch_rocm_version() >= (7, 13)
+                and K % 256 != 0
+            ):
+                raise unittest.SkipTest(
+                    "K must be a multiple of 256 for mxfp4 scale shuffling on ROCm >= 7.13, skipping"
+                )
 
         fp4_scaling_dtype = torch.float8_e8m0fnu if recipe == "mxfp4" else torch.float8_e4m3fn
         BLOCK_SIZE = 16 if recipe == "nvfp4" else 32
