@@ -158,7 +158,7 @@ class TORCH_API Context {
   static bool hasKleidiAI();
   static bool hasLAPACK();
   static bool hasMKLDNN();
-  static bool ckSPDASupported();
+  static bool ckSDPASupported();
   static bool ckGemmSupported();
   static bool hasEigenSparse();
   static bool hasMAGMA() {
