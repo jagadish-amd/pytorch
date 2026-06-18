@@ -4924,7 +4924,7 @@ def _infer_scale_swizzle_impl(
                 ):
                     return (
                         ScalingType.BlockWiseBlk32Ue8m0_32_8_EXT,
-                        SwizzleType.NO_SWIZZLE,
+                        SwizzleType.SWIZZLE_32_4_4,
                     )
 
             expected_numel_a = ceildiv(mat_size[0], 32) * K_multiplier * mat_size[1]

@@ -1228,8 +1228,21 @@ _scaled_mxfp4_mxfp4(
 
 #ifdef USE_ROCM
   // AMD
-  TORCH_CHECK_VALUE(swizzle_a == SwizzleType::NO_SWIZZLE, "scale_a must not be swizzled (NO_SWIZZLE format)");
-  TORCH_CHECK_VALUE(swizzle_b == SwizzleType::NO_SWIZZLE, "scale_b must not be swizzled (NO_SWIZZLE format)");
+#if ROCM_VERSION >= 71300
+  if (scale_mode_a == ScalingType::BlockWiseBlk32Ue8m0_32_8_EXT &&
+      scale_mode_b == ScalingType::BlockWiseBlk32Ue8m0_32_8_EXT) {
+    TORCH_CHECK_VALUE(
+        swizzle_a == SwizzleType::SWIZZLE_32_4_4,
+        "scale_a must use SWIZZLE_32_4_4 for ROCm 7.13+ MX FP4 (gfx950 EXT block scales)");
+    TORCH_CHECK_VALUE(
+        swizzle_b == SwizzleType::SWIZZLE_32_4_4,
+        "scale_b must use SWIZZLE_32_4_4 for ROCm 7.13+ MX FP4 (gfx950 EXT block scales)");
+  } else
+#endif
+  {
+    TORCH_CHECK_VALUE(swizzle_a == SwizzleType::NO_SWIZZLE, "scale_a must not be swizzled (NO_SWIZZLE format)");
+    TORCH_CHECK_VALUE(swizzle_b == SwizzleType::NO_SWIZZLE, "scale_b must not be swizzled (NO_SWIZZLE format)");
+  }
 #else
   // NVIDIA
   TORCH_CHECK_VALUE(swizzle_a == SwizzleType::SWIZZLE_32_4_4, "scale_a must be swizzled to SWIZZLE_32_4_4 format");
@@ -1347,16 +1360,35 @@ void check_swizzle_lengths(ScaledGemmImplementation impl,
       // ROCm currently does not support NVFP4 paths.
       break;
     }
+#if ROCM_VERSION >= 71300
+    if (check_impl == ScaledGemmImplementation::MXFP4_MXFP4) {
+      TORCH_CHECK_VALUE(
+          !(swizzle_a.empty() || swizzle_b.empty()),
+          "ROCm 7.13+ MX FP4 requires explicit swizzle_a and swizzle_b; pass "
+          "SwizzleType.SWIZZLE_32_4_4 for gfx950 BlockWiseBlk32Ue8m0_32_8_EXT scale tensors.");
+    }
+#endif
     TORCH_CHECK_VALUE(
         swizzle_a.size() == 1 && swizzle_b.size() == 1,
         "For ROCM MX gemm, swizzle_a and swizzle_b must each have 1 value, got ",
         swizzle_a.size(),
         " and ",
         swizzle_b.size());
-    TORCH_CHECK_VALUE(
-        swizzle_a[0] == SwizzleType::NO_SWIZZLE &&
-            swizzle_b[0] == SwizzleType::NO_SWIZZLE,
-        "For ROCM MX gemm, swizzle_a and swizzle_b must both be NO_SWIZZLE");
+#if ROCM_VERSION >= 71300
+    if (check_impl == ScaledGemmImplementation::MXFP4_MXFP4) {
+      TORCH_CHECK_VALUE(
+          swizzle_a[0] == SwizzleType::SWIZZLE_32_4_4 &&
+              swizzle_b[0] == SwizzleType::SWIZZLE_32_4_4,
+          "For ROCm 7.13+ MX FP4, swizzle_a and swizzle_b must both be SWIZZLE_32_4_4 "
+          "(gfx950 hipBLASLt pre-shuffled scale layout).");
+    } else
+#endif
+    {
+      TORCH_CHECK_VALUE(
+          swizzle_a[0] == SwizzleType::NO_SWIZZLE &&
+              swizzle_b[0] == SwizzleType::NO_SWIZZLE,
+          "For ROCM MX gemm, swizzle_a and swizzle_b must both be NO_SWIZZLE");
+    }
 #else
     TORCH_CHECK_VALUE(
         swizzle_a.size() == num_args,
