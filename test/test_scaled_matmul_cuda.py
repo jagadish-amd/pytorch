@@ -1954,6 +1954,14 @@ class TestFP8Matmul(TestCase):
                 raise unittest.SkipTest(
                     "K must be a multiple of 256 for mxfp4 scale shuffling on ROCm >= 7.13, skipping"
                 )
+            if (
+                recipe == "mxfp8"
+                and _get_torch_rocm_version() >= (7, 14)
+                and K % 256 != 0
+            ):
+                raise unittest.SkipTest(
+                    "K must be a multiple of 256 for mxfp8 scale shuffling on ROCm >= 7.14, skipping"
+                )
 
         fp4_scaling_dtype = torch.float8_e8m0fnu if recipe == "mxfp4" else torch.float8_e4m3fn
         BLOCK_SIZE = 16 if recipe == "nvfp4" else 32
@@ -2142,8 +2150,15 @@ class TestFP8Matmul(TestCase):
 
         C_ref = A_ref @ B_ref.t()
 
-        # convert to swizzled format: cuBLAS layout on CUDA; on ROCm only MXFP4 uses hipBLASLt GFX950 scale layout
-        if not torch.version.hip or recipe == "mxfp4":
+        # convert to swizzled format: cuBLAS layout on CUDA; on ROCm MXFP4/MXFP8 use hipBLASLt GFX950 scale layout
+        rocm_ext_swizzle = (
+            torch.version.hip
+            and (
+                (recipe == "mxfp4" and _get_torch_rocm_version() >= (7, 13))
+                or (recipe == "mxfp8" and _get_torch_rocm_version() >= (7, 14))
+            )
+        )
+        if not torch.version.hip or rocm_ext_swizzle:
             A_scale = to_blocked(A_scale)
             B_scale = to_blocked(B_scale)
 

@@ -159,8 +159,16 @@ bool is_blockwise_1x16_scaling(const at::Tensor& t, const at::Tensor& scale) {
 bool is_blockwise_1x32_scaling(const at::Tensor& t, const at::Tensor& scale) {
   // TODO: We might want to enforce some structure on the shapes of the scale
   // tensors
-  bool is_fp8_path = (isFloat8Type(t.scalar_type()) && scale.scalar_type() == at::kFloat8_e8m0fnu
+  bool is_fp8_path = false;
+#ifndef USE_ROCM
+  is_fp8_path = (isFloat8Type(t.scalar_type()) && scale.scalar_type() == at::kFloat8_e8m0fnu
       && scale.numel() == round_up<int64_t>(t.size(0), 128) * round_up<int64_t>(ceil_div<int64_t>(t.size(1), 32), 4));
+#elif ROCM_VERSION < 71400
+  is_fp8_path = (isFloat8Type(t.scalar_type()) && scale.scalar_type() == at::kFloat8_e8m0fnu
+      && scale.numel() == round_up<int64_t>(t.size(0), 128) * round_up<int64_t>(ceil_div<int64_t>(t.size(1), 32), 4));
+#endif
+  // ROCm 7.14.0+ at build time: MX FP8 EXT uses is_blockwise_mxfp8_gfx950_pre_swizzled_scaling via
+  // ScalingType::BlockWiseBlk32Ue8m0_32_8_EXT, not BlockWise1x32.
   bool is_packed_fp4_path = false;
 #ifndef USE_ROCM
   // CUDA: MX FP4 uses legacy BlockWise1x32 / cuBLASLt block scaling for packed FP4 + e8m0fnu.
@@ -210,6 +218,17 @@ bool is_blockwise_mxfp4_gfx950_pre_swizzled_scaling(const at::Tensor& t, const a
   return scale.numel() == expected && scale.is_contiguous();
 }
 #endif
+#if ROCM_VERSION >= 71400
+// ROCm gfx950 hipBLASLt Block_32_UE8M0_32_8_EXT (pre-swizzled E8M0 scales for MX FP8)
+bool is_blockwise_mxfp8_gfx950_pre_swizzled_scaling(const at::Tensor& t, const at::Tensor& scale) {
+  if (!isFloat8Type(t.scalar_type()) || scale.scalar_type() != at::kFloat8_e8m0fnu) {
+    return false;
+  }
+  const int64_t k_blocks = ceil_div<int64_t>(t.size(1), 32);
+  const int64_t expected = round_up<int64_t>(t.size(0), 32) * round_up<int64_t>(k_blocks, 8);
+  return scale.numel() == expected && scale.is_contiguous();
+}
+#endif
 #endif
 
 bool is_desired_scaling(const at::Tensor& t, const at::Tensor& scale, ScalingType desired_scaling) {
@@ -228,7 +247,13 @@ bool is_desired_scaling(const at::Tensor& t, const at::Tensor& scale, ScalingTyp
       return is_blockwise_128x128_scaling(t, scale);
     case ScalingType::BlockWiseBlk32Ue8m0_32_8_EXT:
 #if defined(USE_ROCM) && ROCM_VERSION >= 71300
-      return is_blockwise_mxfp4_gfx950_pre_swizzled_scaling(t, scale);
+    {
+      bool match = is_blockwise_mxfp4_gfx950_pre_swizzled_scaling(t, scale);
+#if ROCM_VERSION >= 71400
+      match = match || is_blockwise_mxfp8_gfx950_pre_swizzled_scaling(t, scale);
+#endif
+      return match;
+    }
 #else
       return false;
 #endif
@@ -1074,7 +1099,9 @@ _scaled_mxfp8_mxfp8(
           const Tensor& scale_b, const SwizzleType swizzle_b,
           const std::optional<Tensor>& bias,
           const c10::ScalarType out_dtype,
-          Tensor& out) {
+          Tensor& out,
+          ScalingType scale_mode_a = ScalingType::BlockWise1x32,
+          ScalingType scale_mode_b = ScalingType::BlockWise1x32) {
   // Restrictions:
   // A, B are FP8, scales are e8m0, A: shape K//32, B: K, N//32
   // Scales must be swizzled
@@ -1082,20 +1109,74 @@ _scaled_mxfp8_mxfp8(
       mat_a.scalar_type(), mat_b.scalar_type());
 
 #ifdef USE_ROCM
-  auto scale_a_elems = ceil_div<int64_t>(mat_a.size(0), 32) * mat_a.size(1);
-  auto scale_b_elems = ceil_div<int64_t>(mat_b.size(1), 32) * mat_b.size(0);
+#if ROCM_VERSION >= 71400
+  const int64_t k_blocks_a = ceil_div<int64_t>(mat_a.size(1), 32);
+  const int64_t k_blocks_b = ceil_div<int64_t>(mat_b.size(0), 32);
+  const int64_t scale_a_elems_ext =
+      round_up<int64_t>(mat_a.size(0), 32) * round_up<int64_t>(k_blocks_a, 8);
+  const int64_t scale_b_elems_ext =
+      round_up<int64_t>(mat_b.size(1), 32) * round_up<int64_t>(k_blocks_b, 8);
+
+  if (scale_mode_a == ScalingType::BlockWiseBlk32Ue8m0_32_8_EXT &&
+      scale_mode_b == ScalingType::BlockWiseBlk32Ue8m0_32_8_EXT) {
+    TORCH_CHECK_VALUE(
+        scale_a.numel() == scale_a_elems_ext && scale_b.numel() == scale_b_elems_ext,
+        "For BlockWiseBlk32Ue8m0_32_8_EXT MXFP8 scales, scale_a should have ",
+        scale_a_elems_ext,
+        " elements and scale_b ",
+        scale_b_elems_ext,
+        "; got ",
+        scale_a.numel(),
+        " and ",
+        scale_b.numel());
+    if (at::detail::getCUDAHooks().isGPUArch({"gfx950"})) {
+      TORCH_CHECK_VALUE(
+          mat_a.size(1) % 256 == 0,
+          "K must be a multiple of 256 for mxfp8 scale shuffling on ROCm >= 7.14; got K=",
+          mat_a.size(1));
+    }
+  } else
+#endif
+  {
+    auto scale_a_elems = ceil_div<int64_t>(mat_a.size(0), 32) * mat_a.size(1);
+    auto scale_b_elems = ceil_div<int64_t>(mat_b.size(1), 32) * mat_b.size(0);
+    TORCH_CHECK_VALUE(
+        scale_mode_a == ScalingType::BlockWise1x32 && scale_mode_b == ScalingType::BlockWise1x32,
+        "ROCm MXFP8 (below ROCm 7.14.0 at build time) requires BlockWise1x32 scales; got ",
+        scale_mode_a);
+    TORCH_CHECK_VALUE(scale_a_elems == scale_a.numel(),
+           "For Blockwise scaling scale_a should have ", scale_a_elems, " elements, got: ", scale_a.numel());
+    TORCH_CHECK_VALUE(scale_b_elems == scale_b.numel(),
+           "For Blockwise scaling scale_b should have ", scale_b_elems, " elements, got: ", scale_b.numel());
+  }
 #else
   auto scale_a_elems = round_up<int64_t>(mat_a.size(0), 128) * round_up<int64_t>(ceil_div<int64_t>(mat_a.size(1), 32), 4);
   auto scale_b_elems = round_up<int64_t>(mat_b.size(1), 128) * round_up<int64_t>(ceil_div<int64_t>(mat_b.size(0), 32), 4);
-#endif
   TORCH_CHECK_VALUE(scale_a_elems == scale_a.numel(),
          "For Blockwise scaling scale_a should have ", scale_a_elems, " elements, got: ", scale_a.numel());
   TORCH_CHECK_VALUE(scale_b_elems == scale_b.numel(),
          "For Blockwise scaling scale_b should have ", scale_b_elems, " elements, got: ", scale_b.numel());
+#endif
 
 #ifndef USE_ROCM
   TORCH_CHECK_VALUE(swizzle_a == SwizzleType::SWIZZLE_32_4_4, "scale_a must be swizzled to SWIZZLE_32_4_4 format");
   TORCH_CHECK_VALUE(swizzle_b == SwizzleType::SWIZZLE_32_4_4, "scale_b must be swizzled to SWIZZLE_32_4_4 format");
+#else
+#if ROCM_VERSION >= 71400
+  if (scale_mode_a == ScalingType::BlockWiseBlk32Ue8m0_32_8_EXT &&
+      scale_mode_b == ScalingType::BlockWiseBlk32Ue8m0_32_8_EXT) {
+    TORCH_CHECK_VALUE(
+        swizzle_a == SwizzleType::SWIZZLE_32_4_4,
+        "scale_a must use SWIZZLE_32_4_4 for ROCm 7.14+ MX FP8 (gfx950 EXT block scales)");
+    TORCH_CHECK_VALUE(
+        swizzle_b == SwizzleType::SWIZZLE_32_4_4,
+        "scale_b must use SWIZZLE_32_4_4 for ROCm 7.14+ MX FP8 (gfx950 EXT block scales)");
+  } else
+#endif
+  {
+    TORCH_CHECK_VALUE(swizzle_a == SwizzleType::NO_SWIZZLE, "scale_a must not be swizzled (NO_SWIZZLE format)");
+    TORCH_CHECK_VALUE(swizzle_b == SwizzleType::NO_SWIZZLE, "scale_b must not be swizzled (NO_SWIZZLE format)");
+  }
 #endif
 
   TORCH_CHECK_VALUE(scale_a.is_contiguous() && scale_b.is_contiguous(),
@@ -1103,8 +1184,8 @@ _scaled_mxfp8_mxfp8(
 
   TORCH_CHECK_VALUE(out.scalar_type() == out_dtype, "expected out.scalar_type() to be ", out_dtype, ", but got ", out_dtype);
 
-  auto scaling_choice_a = ScalingType::BlockWise1x32;
-  auto scaling_choice_b = ScalingType::BlockWise1x32;
+  auto scaling_choice_a = scale_mode_a;
+  auto scaling_choice_b = scale_mode_b;
 
 #ifdef USE_ROCM
 #if ROCM_VERSION >= 70000
@@ -1360,6 +1441,14 @@ void check_swizzle_lengths(ScaledGemmImplementation impl,
       // ROCm currently does not support NVFP4 paths.
       break;
     }
+#if ROCM_VERSION >= 71400
+    if (check_impl == ScaledGemmImplementation::MXFP8_MXFP8) {
+      TORCH_CHECK_VALUE(
+          !(swizzle_a.empty() || swizzle_b.empty()),
+          "ROCm 7.14+ MX FP8 requires explicit swizzle_a and swizzle_b; pass "
+          "SwizzleType.SWIZZLE_32_4_4 for gfx950 BlockWiseBlk32Ue8m0_32_8_EXT scale tensors.");
+    }
+#endif
 #if ROCM_VERSION >= 71300
     if (check_impl == ScaledGemmImplementation::MXFP4_MXFP4) {
       TORCH_CHECK_VALUE(
@@ -1374,6 +1463,15 @@ void check_swizzle_lengths(ScaledGemmImplementation impl,
         swizzle_a.size(),
         " and ",
         swizzle_b.size());
+#if ROCM_VERSION >= 71400
+    if (check_impl == ScaledGemmImplementation::MXFP8_MXFP8) {
+      TORCH_CHECK_VALUE(
+          swizzle_a[0] == SwizzleType::SWIZZLE_32_4_4 &&
+              swizzle_b[0] == SwizzleType::SWIZZLE_32_4_4,
+          "For ROCm 7.14+ MX FP8, swizzle_a and swizzle_b must both be SWIZZLE_32_4_4 "
+          "(gfx950 hipBLASLt pre-shuffled scale layout).");
+    } else
+#endif
 #if ROCM_VERSION >= 71300
     if (check_impl == ScaledGemmImplementation::MXFP4_MXFP4) {
       TORCH_CHECK_VALUE(
@@ -1620,7 +1718,21 @@ _scaled_mm_cuda_v2_out(
   } else if (gemm_impl == ScaledGemmImplementation::BLOCK_1x128_1x128) {
     return _scaled_block1x128_block1x128(mat_a, mat_b, scale_a[0], scale_b[0], bias, out_dtype_, use_fast_accum, out);
   } else if (gemm_impl == ScaledGemmImplementation::MXFP8_MXFP8) {
-    return _scaled_mxfp8_mxfp8(mat_a, mat_b, scale_a[0], swizzle_a_enum[0], scale_b[0], swizzle_b_enum[0], bias, out_dtype_, out);
+    TORCH_CHECK(
+        scale_recipe_a_enum.size() >= 1 && scale_recipe_b_enum.size() >= 1,
+        "MXFP8 expects one scale recipe per operand");
+    return _scaled_mxfp8_mxfp8(
+        mat_a,
+        mat_b,
+        scale_a[0],
+        swizzle_a_enum[0],
+        scale_b[0],
+        swizzle_b_enum[0],
+        bias,
+        out_dtype_,
+        out,
+        scale_recipe_a_enum[0],
+        scale_recipe_b_enum[0]);
   } else if (gemm_impl == ScaledGemmImplementation::NVFP4_NVFP4) {
     return _scaled_nvfp4_nvfp4(mat_a, mat_b, scale_a[0], swizzle_a_enum[0], scale_b[0], swizzle_b_enum[0], bias, out_dtype_, out,
                                scale_a[1], scale_b[1]);

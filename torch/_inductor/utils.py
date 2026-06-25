@@ -4913,8 +4913,22 @@ def _infer_scale_swizzle_impl(
             ):
                 return ScalingType.BlockWise1x32, SwizzleType.SWIZZLE_32_4_4
         else:
-            # AMD: MXFP8 uses plain BlockWise1x32. MXFP4 EXT only when runtime ROCm >= 7.13.0.
+            # AMD: MXFP8 uses plain BlockWise1x32 below 7.14. MXFP4 EXT at runtime ROCm >= 7.13.0;
+            # MXFP8 EXT at runtime ROCm >= 7.14.0.
             if mat_dtype == torch.float4_e2m1fn_x2 and _rocm_release_ge(7, 13, 0):
+                k_blocks_a = ceildiv(K_multiplier * mat_size[1], 32)
+                ext_numel_a = _round_up(mat_size[0], 32) * _round_up(k_blocks_a, 8)
+                k_blocks_b = ceildiv(K_multiplier * mat_size[0], 32)
+                ext_numel_b = _round_up(mat_size[1], 32) * _round_up(k_blocks_b, 8)
+                if eq_fn(scale_numel, ext_numel_a) or eq_fn(
+                    scale_numel, ext_numel_b
+                ):
+                    return (
+                        ScalingType.BlockWiseBlk32Ue8m0_32_8_EXT,
+                        SwizzleType.SWIZZLE_32_4_4,
+                    )
+
+            if mat_dtype == torch.float8_e4m3fn and _rocm_release_ge(7, 14, 0):
                 k_blocks_a = ceildiv(K_multiplier * mat_size[1], 32)
                 ext_numel_a = _round_up(mat_size[0], 32) * _round_up(k_blocks_a, 8)
                 k_blocks_b = ceildiv(K_multiplier * mat_size[0], 32)

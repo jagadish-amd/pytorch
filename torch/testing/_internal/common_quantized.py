@@ -37,6 +37,12 @@ def rocm_mxfp4_ext_scale_layout_available() -> bool:
     t = _rocm_release_tuple()
     return t is not None and t >= (7, 13, 0)
 
+
+def rocm_mxfp8_ext_scale_layout_available() -> bool:
+    """True when runtime ROCm is at least 7.14.0 (aligns with C++ EXT when ROCM_VERSION >= 71400)."""
+    t = _rocm_release_tuple()
+    return t is not None and t >= (7, 14, 0)
+
 def _conv_output_shape(input_size, kernel_size, padding, stride, dilation,
                        output_padding=0):
     """Computes the output shape given convolution parameters."""
@@ -538,7 +544,7 @@ def to_blocked(input_matrix) -> torch.Tensor:
     https://docs.nvidia.com/cuda/cublas/index.html#d-block-scaling-factors-layout
 
     On ROCm 7.13.0 or newer (``torch.version.rocm``), uses the hipBLASLt GFX950 pre-swizzled E8M0 layout for
-    ``Block_32_UE8M0_32_8_EXT``: pad to ``ceil(H,32)`` by ``ceil(W,8)``, view as
+    ``Block_32_UE8M0_32_8_EXT`` (MX FP4 from 7.13, MX FP8 from 7.14): pad to ``ceil(H,32)`` by ``ceil(W,8)``, view as
     ``(H//32, 2, 16, W//8, 2, 4)``, ``permute(0, 3, 5, 2, 4, 1)`` (mxDataGenerator
     ``preSwizzleScalesGFX950`` / AITER ``e8m0_shuffle``). On older ROCm, returns the input unchanged (contiguous 1D).
 
@@ -551,7 +557,7 @@ def to_blocked(input_matrix) -> torch.Tensor:
     rows, cols = input_matrix.shape
 
     if torch.version.hip:
-        if rocm_mxfp4_ext_scale_layout_available():
+        if rocm_mxfp4_ext_scale_layout_available() or rocm_mxfp8_ext_scale_layout_available():
             padded_rows = ceil_div(rows, 32) * 32
             padded_cols = ceil_div(cols, 8) * 8
 
