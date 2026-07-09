@@ -545,8 +545,7 @@ def to_blocked(input_matrix) -> torch.Tensor:
 
     On ROCm 7.13.0 or newer (``torch.version.rocm``), uses the hipBLASLt GFX950 pre-swizzled E8M0 layout for
     ``Block_32_UE8M0_32_8_EXT`` (MX FP4 from 7.13, MX FP8 from 7.14): pad to ``ceil(H,32)`` by ``ceil(W,8)``, view as
-    ``(H//32, 2, 16, W//8, 2, 4)``, ``permute(0, 3, 5, 2, 4, 1)`` (mxDataGenerator
-    ``preSwizzleScalesGFX950`` / AITER ``e8m0_shuffle``). On older ROCm, returns the input unchanged (contiguous 1D).
+    ``(H//32, 2, 16, W//8, 2, 4)``, then ``permute(0, 3, 5, 2, 4, 1)``. On older ROCm, returns the input unchanged (contiguous 1D).
 
     Args:
         input_matrix: 2D tensor of shape (H, W)
@@ -574,14 +573,17 @@ def to_blocked(input_matrix) -> torch.Tensor:
     n_row_blocks = ceil_div(rows, 128)
     n_col_blocks = ceil_div(cols, 4)
 
+    # Calculate the padded shape
     padded_rows = n_row_blocks * 128
     padded_cols = n_col_blocks * 4
 
     padded = input_matrix
+    # Ideally we would use torch.nn.pad but it doesn't support float8_e8m0fnu for now
     if (rows, cols) != (padded_rows, padded_cols):
         padded = torch.zeros((padded_rows, padded_cols), device=input_matrix.device, dtype=input_matrix.dtype)
         padded[:rows, :cols] = input_matrix
 
+    # Rearrange the blocks
     blocks = padded.view(n_row_blocks, 128, n_col_blocks, 4).permute(0, 2, 1, 3)
     rearranged = blocks.reshape(-1, 4, 32, 4).transpose(1, 2).reshape(-1, 32, 16)
 

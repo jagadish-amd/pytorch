@@ -360,6 +360,11 @@ void validate_scaled_mm_v2_inputs(
       recipe_a, recipe_b, ScalingType::RowWise, ScalingType::RowWise);
   const bool is_mx_1x32 = is_single_recipe(
       recipe_a, recipe_b, ScalingType::BlockWise1x32, ScalingType::BlockWise1x32);
+  const bool is_mx_ext = is_single_recipe(
+      recipe_a,
+      recipe_b,
+      ScalingType::BlockWiseBlk32Ue8m0_32_8_EXT,
+      ScalingType::BlockWiseBlk32Ue8m0_32_8_EXT);
   const bool is_nv_1x16 = is_single_recipe(
       recipe_a, recipe_b, ScalingType::BlockWise1x16, ScalingType::BlockWise1x16);
   const bool is_nv_2lvl = is_two_level_nvfp4(recipe_a, recipe_b);
@@ -430,6 +435,30 @@ void validate_scaled_mm_v2_inputs(
     TORCH_CHECK_VALUE(
         scale_a[0].is_contiguous() && scale_b[0].is_contiguous(),
         "For Blockwise scaling both scales should be contiguous");
+  } else if (is_mx_ext) {
+    // ROCm gfx950 hipBLASLt BLK32_UE8M0_32_8_EXT layout. Formulas mirror
+    // _scaled_mxfp8_mxfp8 / _scaled_mxfp4_mxfp4 in cuda/ScaledBlas.cpp.
+    const auto expected_a_elems = sym_round_up(M, 32) *
+        sym_round_up(sym_ceil_div(K_unpacked, 32), 8);
+    const auto expected_b_elems = sym_round_up(N, 32) *
+        sym_round_up(sym_ceil_div(K_unpacked, 32), 8);
+    TORCH_CHECK_VALUE(
+        scale_a.size() == 1 && scale_a[0].sym_numel() == expected_a_elems &&
+            scale_a[0].scalar_type() == ScalarType::Float8_e8m0fnu,
+        "For BlockWiseBlk32Ue8m0_32_8_EXT scaling scale_a should have ",
+        expected_a_elems,
+        " elements, got: ",
+        scale_a.empty() ? c10::SymInt(0) : scale_a[0].sym_numel());
+    TORCH_CHECK_VALUE(
+        scale_b.size() == 1 && scale_b[0].sym_numel() == expected_b_elems &&
+            scale_b[0].scalar_type() == ScalarType::Float8_e8m0fnu,
+        "For BlockWiseBlk32Ue8m0_32_8_EXT scaling scale_b should have ",
+        expected_b_elems,
+        " elements, got: ",
+        scale_b.empty() ? c10::SymInt(0) : scale_b[0].sym_numel());
+    TORCH_CHECK_VALUE(
+        scale_a[0].is_contiguous() && scale_b[0].is_contiguous(),
+        "For Blockwise scaling both scales should be contiguous");
   } else if (is_nv_1x16) {
     const auto expected_a_elems = sym_round_up(M, 128) *
         sym_round_up(sym_ceil_div(K_unpacked, 16), 4);
@@ -492,12 +521,29 @@ void validate_scaled_mm_v2_inputs(
   // `check_swizzle_lengths` and the per-impl `swizzle_a == ...` asserts in
   // aten/src/ATen/native/cuda/ScaledBlas.cpp. Only MX/NVFP recipes consult
   // swizzle; tensorwise/rowwise/deepseek paths don't.
-  const bool is_mx_or_nvfp = is_mx_1x32 || is_nv_1x16 || is_nv_2lvl;
+  const bool is_mx_or_nvfp = is_mx_1x32 || is_mx_ext || is_nv_1x16 || is_nv_2lvl;
   if (is_mx_or_nvfp) {
     const auto num_args_a = recipe_a.size();
     const auto num_args_b = recipe_b.size();
     const bool is_rocm = at::globalContext().hasROCM();
-    if (!is_rocm) {
+    if (is_mx_ext) {
+      TORCH_CHECK_VALUE(
+          swizzle_a.size() == num_args_a,
+          "swizzle_a must have ", num_args_a, " value",
+          num_args_a == 1 ? "" : "s",
+          ", got ", swizzle_a.size());
+      TORCH_CHECK_VALUE(
+          swizzle_b.size() == num_args_b,
+          "swizzle_b must have ", num_args_b, " value",
+          num_args_b == 1 ? "" : "s",
+          ", got ", swizzle_b.size());
+      TORCH_CHECK_VALUE(
+          swizzle_a[0] == SwizzleType::SWIZZLE_32_4_4,
+          "scale_a must use SWIZZLE_32_4_4 for BlockWiseBlk32Ue8m0_32_8_EXT block scales");
+      TORCH_CHECK_VALUE(
+          swizzle_b[0] == SwizzleType::SWIZZLE_32_4_4,
+          "scale_b must use SWIZZLE_32_4_4 for BlockWiseBlk32Ue8m0_32_8_EXT block scales");
+    } else if (!is_rocm) {
       TORCH_CHECK_VALUE(
           swizzle_a.size() == num_args_a,
           "swizzle_a must have ", num_args_a, " value",
