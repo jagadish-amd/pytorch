@@ -2008,6 +2008,7 @@ class TestFP8Matmul(TestCase):
         (128, 256, 512),
         (256, 512, 128),
         (512, 128, 256),
+
         # Non block multiples
         (65, 96, 112),
         (197, 224, 272),
