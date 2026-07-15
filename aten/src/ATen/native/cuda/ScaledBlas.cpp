@@ -1151,12 +1151,6 @@ _scaled_mxfp8_mxfp8(
         scale_a.numel(),
         " and ",
         scale_b.numel());
-    if (at::detail::getCUDAHooks().isGPUArch({"gfx950"})) {
-      TORCH_CHECK_VALUE(
-          mat_a.size(1) % 256 == 0,
-          "K must be a multiple of 256 for mxfp8 scale shuffling on ROCm >= 7.14; got K=",
-          mat_a.size(1));
-    }
   } else
 #endif
   {
@@ -1289,13 +1283,6 @@ _scaled_mxfp4_mxfp4(
       scale_a.numel(),
       " and ",
       scale_b.numel());
-  if (at::detail::getCUDAHooks().isGPUArch({"gfx950"})) {
-    const int64_t logical_k = K_multiplier * mat_a.size(1);
-    TORCH_CHECK_VALUE(
-        logical_k % 256 == 0,
-        "K must be a multiple of 256 for mxfp4 scale shuffling on ROCm >= 7.13; got K=",
-        logical_k);
-  }
 #elif ROCM_VERSION >= 70000
   TORCH_CHECK_VALUE(
       scale_mode_a == ScalingType::BlockWise1x32 && scale_mode_b == ScalingType::BlockWise1x32,
