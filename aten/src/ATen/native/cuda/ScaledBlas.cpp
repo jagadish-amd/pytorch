@@ -1680,16 +1680,16 @@ TORCH_IMPL_FUNC(_scaled_mm_cuda_v2_out)(
     TORCH_CHECK(
         scale_recipe_a_enum.size() >= 1 && scale_recipe_b_enum.size() >= 1,
         "MXFP8 expects one scale recipe per operand");
-    return _scaled_mxfp8_mxfp8(
+    _scaled_mxfp8_mxfp8(
         mat_a,
         mat_b,
         scale_a[0],
         swizzle_a_enum[0],
         scale_b[0],
         swizzle_b_enum[0],
-        bias,
+        bias_opt,
         out_dtype_,
-        out,
+        out_mut,
         scale_recipe_a_enum[0],
         scale_recipe_b_enum[0]);
   } else if (gemm_impl == ScaledGemmImplementation::NVFP4_NVFP4) {
@@ -1701,16 +1701,16 @@ TORCH_IMPL_FUNC(_scaled_mm_cuda_v2_out)(
     TORCH_CHECK(
         scale_recipe_a_enum.size() >= 1 && scale_recipe_b_enum.size() >= 1,
         "MXFP4 expects one scale recipe per operand");
-    return _scaled_mxfp4_mxfp4(
+    _scaled_mxfp4_mxfp4(
         mat_a,
         mat_b,
         scale_a[0],
         swizzle_a_enum[0],
         scale_b[0],
         swizzle_b_enum[0],
-        bias,
+        bias_opt,
         out_dtype_,
-        out,
+        out_mut,
         scale_recipe_a_enum[0],
         scale_recipe_b_enum[0]);
   } else {
