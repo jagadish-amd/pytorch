@@ -115,17 +115,19 @@ def evaluate_gfx_arch_within(arch_list):
         return False
     gcn_arch_name = torch.cuda.get_device_properties('cuda').gcnArchName
     effective_arch = os.environ.get('PYTORCH_DEBUG_FLASH_ATTENTION_GCN_ARCH_OVERRIDE', gcn_arch_name)
-    # gcnArchName can be complicated strings like gfx90a:sramecc+:xnack-
-    # Hence the matching should be done reversely
-    return any(arch in effective_arch for arch in arch_list)
+    # gcnArchName is "<offload-target>:<features>", for example
+    # gfx90a:sramecc+:xnack-. Match the target exactly. A substring check
+    # treats gfx1250-strict as gfx1250, and those are different targets.
+    target = effective_arch.split(":", 1)[0]
+    return target in arch_list
 
 # Per-generation gfx targets, ordered oldest -> newest. Each "OrLater" helper
 # below unions its own generation with every newer one, so the predicates are
 # nested by construction: CDNA5OrLater => CDNA3OrLater => CDNA2OrLater.
 _CDNA2_ARCHS = ["gfx90a"]
 _CDNA3_ARCHS = ["gfx942", "gfx950"]
-# GFX1250 (CDNA 5)
-_CDNA5_ARCHS = ["gfx1250"]
+# GFX1250 (CDNA 5), including the gfx1250-strict offload target.
+_CDNA5_ARCHS = ["gfx1250", "gfx1250-strict"]
 
 def CDNA5OrLater():
     return evaluate_gfx_arch_within(_CDNA5_ARCHS)
@@ -138,13 +140,15 @@ def CDNA2OrLater():
 
 # Archs that take the opportunistic_fastAtomicAdd path (packed 2x16 atomics + DPP
 # lane coalescing) in ScatterGatherKernel.cu. Keep in sync with that kernel's arch
-# gate; this is intentionally not CDNA3OrLater (gfx1250 uses plain fastAtomicAdd).
+# gate; this is intentionally not CDNA3OrLater (CDNA5 uses plain fastAtomicAdd).
 def gfx_arch_supports_opportunistic_fastatomics():
     return evaluate_gfx_arch_within(["gfx942", "gfx950"])
 
 def evaluate_platform_supports_flash_attention():
     if TEST_WITH_ROCM:
-        arch_list = ["gfx90a", "gfx942", "gfx1100", "gfx1201", "gfx950", "gfx1250"]
+        arch_list = [
+            "gfx90a", "gfx942", "gfx1100", "gfx1201", "gfx950", "gfx1250",
+        ]
         if os.environ.get("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "0") != "0":
             arch_list += ["gfx1101", "gfx1102", "gfx1150", "gfx1151", "gfx1200"]
         return evaluate_gfx_arch_within(arch_list)
@@ -162,7 +166,9 @@ def evaluate_platform_supports_ck_sdpa():
 
 def evaluate_platform_supports_efficient_attention():
     if TEST_WITH_ROCM:
-        arch_list = ["gfx90a", "gfx942", "gfx1100", "gfx1201", "gfx950", "gfx1250"]
+        arch_list = [
+            "gfx90a", "gfx942", "gfx1100", "gfx1201", "gfx950", "gfx1250",
+        ]
         if os.environ.get("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "0") != "0":
             arch_list += ["gfx1101", "gfx1102", "gfx1150", "gfx1151", "gfx1200"]
         return evaluate_gfx_arch_within(arch_list)
@@ -250,8 +256,14 @@ def evaluate_platform_supports_fp8():
                 archs.append('gfx95')
             if ROCM_VERSION >= (7, 14):
                 archs.append('gfx1250')
+            if ROCM_VERSION >= (10, 3):
+                archs.append('gfx1250-strict')
+            gcn_name = torch.cuda.get_device_properties(0).gcnArchName
+            # "gfx1250" is a prefix of "gfx1250-strict".
+            if 'gfx1250-strict' in gcn_name:
+                return ROCM_VERSION >= (10, 3)
             for arch in archs:
-                if arch in torch.cuda.get_device_properties(0).gcnArchName:
+                if arch in gcn_name:
                     return True
             return False
         else:
@@ -266,8 +278,8 @@ def evaluate_platform_supports_fp8_grouped_gemm():
         if torch.version.hip:
             if "USE_MSLK" not in torch.__config__.show():
                 return False
-            # gfx1250 omitted: MSLK only builds gfx942/gfx950 kernels (see the arch
-            # filter in aten/src/ATen/CMakeLists.txt). Add gfx1250 here once MSLK does.
+            # gfx1250 and gfx1250-strict omitted: MSLK builds only gfx942/gfx950.
+            # See aten/src/ATen/CMakeLists.txt. Add them once MSLK does.
             archs = ['gfx942', 'gfx950']
             for arch in archs:
                 if arch in torch.cuda.get_device_properties(0).gcnArchName:
@@ -281,7 +293,12 @@ def evaluate_platform_supports_mx_gemm():
         if torch.version.hip:
             if ROCM_VERSION >= (7, 0):
                 gcn_name = torch.cuda.get_device_properties(0).gcnArchName
-                return 'gfx950' in gcn_name or ('gfx1250' in gcn_name and ROCM_VERSION >= (7, 14))
+                if 'gfx950' in gcn_name:
+                    return True
+                # "gfx1250" is a prefix of "gfx1250-strict", so test strict first.
+                if 'gfx1250-strict' in gcn_name:
+                    return ROCM_VERSION >= (10, 3)
+                return 'gfx1250' in gcn_name and ROCM_VERSION >= (7, 14)
         else:
             return SM100OrLater
     return False
